@@ -1,3 +1,3 @@
 FROM nginx:alpine
-COPY poc-flow.public.html /usr/share/nginx/html/poc-flow.public.html
+COPY index.html /usr/share/nginx/html/index.html
 EXPOSE 80
