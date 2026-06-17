@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POC — Orchestration d'agents Claude par webhooks Jira (board DEMO)</title>
+<style>
+  :root {
+    --ink: #16213a; --navy: #1e2761; --muted: #5d6b8a; --line: #dde4f2;
+    --soft: #f1f4fb; --accent: #ff6b4a; --claude: #D97757; --blue: #3e7bfa;
+    --green: #14a06b; --slack: #4a154b; --bg: #f6f8fd;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; background: var(--bg);
+    color: var(--ink); padding: 30px 3vw 40px; }
+
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 23px; font-weight: 800; letter-spacing: -.01em; }
+  .controls { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .controls button { background: var(--navy); color: #fff; border: 0; border-radius: 9px;
+    padding: 8px 16px; font-size: 14px; font-weight: 700; cursor: pointer; }
+  .controls button:hover { background: #2a347e; }
+  .controls button.ghost { background: #fff; color: var(--navy); border: 1.5px solid var(--line);
+    padding: 8px 13px; }
+  .controls button.ghost:hover { border-color: var(--navy); background: var(--soft); }
+  .hint { font-size: 12.5px; color: var(--muted); }
+
+  .layout { display: grid; grid-template-columns: 1.7fr 1fr; gap: 22px; margin-top: 16px; }
+
+  /* ---------- BOARD ---------- */
+  .boardwrap { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
+  .lane-title { font-size: 12px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 10px; }
+  /* légende : reprend exactement les icônes/couleurs des cards du circuit */
+  .legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-left: 8px;
+    text-transform: none; letter-spacing: 0; font-size: 11px; vertical-align: middle; }
+  .legend i { display: inline-flex; align-items: center; gap: 5px; font-style: normal; font-weight: 700; }
+  .legend .botico, .legend .humico, .legend .hookico { width: 17px; height: 17px; }
+  .legend .botico { border-radius: 5px; }
+  .legend .humico { font-size: 9px; }
+  .legend .hookico { display: inline-flex; align-items: center; justify-content: center; flex: none;
+    border-radius: 5px; background: #e8efff; border: 1px solid #c4d4fb; color: var(--blue); font-size: 10px; }
+  .legend .relico { color: var(--claude); font-weight: 800; font-size: 14px; }
+  .board { position: relative; display: grid; grid-template-columns: repeat(7, 1fr); gap: 7px; }
+  .col { background: var(--soft); border: 1px solid var(--line); border-radius: 11px;
+    min-height: 150px; padding: 7px; transition: box-shadow .3s, border-color .3s; }
+  .col h3 { font-family: ui-monospace, Menlo, monospace; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .01em; color: #2f4a8a; background: #e8eefb; border: 1px solid #c9d6f2;
+    border-radius: 7px; padding: 4px 4px; text-align: center; margin-bottom: 10px; }
+  .col.active { border-color: var(--claude); box-shadow: 0 0 0 3px rgba(217,119,87,.18); }
+  /* ticket */
+  #ticket { position: absolute; background: #fff; border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 9px; box-shadow: 0 6px 16px rgba(22,33,58,.14);
+    transition: left .9s cubic-bezier(.5,1.3,.4,1), top .9s, width .9s, opacity .4s; z-index: 5; }
+  #ticket .key { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--muted); }
+  #ticket .ttl { font-size: 11.5px; font-weight: 700; margin-top: 2px; line-height: 1.25; }
+  #ticket .row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+  #ticket .nb { font-size: 10px; background: #e8eefb; color: #2f4a8a; border-radius: 6px;
+    padding: 1px 6px; font-weight: 700; }
+  .avatar { width: 18px; height: 18px; border-radius: 50%; background: #fbe9e2;
+    display: flex; align-items: center; justify-content: center; }
+
+  /* ---------- CIRCUIT D'AGENTS ---------- */
+  .circuit { margin-top: 22px; display: flex; flex-direction: column; gap: 10px; }
+  .phase { display: flex; align-items: stretch; gap: 12px; }
+  .phase-col { flex: none; width: 112px; display: flex; align-items: center; justify-content: center;
+    text-align: center; font-family: ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 700;
+    letter-spacing: .04em; color: #2f4a8a; background: #eef3fc; border: 1px solid #d3def6;
+    border-radius: 9px; padding: 6px; }
+  .flow { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+  /* cartes uniformes — Claude (agent) et humain partagent exactement la même boîte */
+  .agent, .node.human { width: 162px; height: 54px; background: #fff; border: 1.5px solid var(--line);
+    border-radius: 11px; padding: 7px 11px; display: flex; flex-direction: column; justify-content: center;
+    overflow: hidden; transition: border-color .3s, box-shadow .3s, transform .3s; }
+  .agent .name, .node.human .name { display: flex; align-items: center; gap: 7px; font-weight: 800; font-size: 12.5px; }
+  .agent .role, .node.human .role { font-size: 10.5px; color: var(--muted); margin-top: 3px;
+    line-height: 1.2; font-weight: 500; }
+  .agent.on { border-color: var(--claude); box-shadow: 0 8px 22px rgba(217,119,87,.25); transform: translateY(-3px); }
+  .node.human.on { border-color: var(--accent); box-shadow: 0 8px 22px rgba(255,107,74,.25); transform: translateY(-3px); }
+
+  /* connecteurs : largeur fixe pour un espacement régulier, centrés verticalement */
+  .arr { flex: none; width: 16px; text-align: center; color: var(--muted); font-weight: 800; font-size: 14px; opacity: .5; }
+  .arr.rel { width: 20px; color: var(--claude); font-size: 15px; opacity: .85; }
+  .hook { flex: none; width: 162px; height: 54px; display: flex; align-items: center; justify-content: center;
+    text-align: center; font-size: 10.5px; font-weight: 800; letter-spacing: .04em; color: var(--blue);
+    background: #e8efff; border: 1.5px solid #c4d4fb; border-radius: 11px; padding: 6px 10px;
+    opacity: .5; transition: opacity .3s, transform .3s, box-shadow .3s; }
+  .hook.on { opacity: 1; box-shadow: 0 8px 22px rgba(62,123,250,.22); transform: translateY(-3px); }
+  .to { flex: none; font-size: 10px; font-weight: 700; color: var(--green); background: #e6f6ee;
+    border: 1px solid #bfe6d2; border-radius: 99px; padding: 5px 11px; white-space: nowrap; }
+  .botico { width: 22px; height: 22px; border-radius: 7px; background: var(--navy); color: #fff;
+    display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .humico { width: 22px; height: 22px; border-radius: 50%; background: #ffe7e0;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 12px; flex: none; }
+
+  /* carte hors-circuit : backlog-lister */
+  .offcircuit { margin-top: 16px; display: flex; align-items: center; gap: 12px;
+    background: #fbf7ff; border: 1px dashed #d8c7ec; border-radius: 12px; padding: 10px 14px; }
+  .offcircuit .botico { background: var(--slack); }
+  .offcircuit .txt { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .offcircuit .txt b { color: var(--ink); }
+
+  /* ---------- PANNEAUX DROITE ---------- */
+  .panel { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+  /* colonne de droite : étirée par la grille à la hauteur du bloc de gauche (#boardwrap),
+     puis découpée en deux panneaux strictement égaux (50% chacun) */
+  .side { display: flex; flex-direction: column; gap: 18px; height: 100%; }
+  .side .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .panel h2 { flex: none; font-size: 13px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .slackbadge { width: 18px; height: 18px; border-radius: 5px; background: var(--slack); color: #fff;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+  /* notifications Slack */
+  #slack { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+  .smsg { display: flex; gap: 9px; align-items: flex-start; opacity: 0; transform: translateY(8px);
+    transition: opacity .5s, transform .5s; }
+  .smsg.in { opacity: 1; transform: none; }
+  .smsg .ava { width: 26px; height: 26px; border-radius: 6px; background: var(--slack); color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 13px; flex: none; }
+  .smsg .body .top { font-size: 12px; }
+  .smsg .body .top b { font-weight: 800; }
+  .smsg .body .top span { color: var(--muted); font-size: 10.5px; margin-left: 6px; }
+  .smsg .body .text { font-size: 13.5px; margin-top: 1px; }
+  .smsg .body .ch { font-size: 10.5px; color: var(--muted); }
+  /* journal */
+  #log { flex: 1; min-height: 0; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; line-height: 1.75;
+    background: var(--navy); color: #cadcfc; border-radius: 10px; padding: 12px 14px; overflow-y: auto; }
+  #log .l { opacity: 0; transition: opacity .4s; display: block; }
+  #log .l.in { opacity: 1; }
+  #log .wh { color: #8fb3ff; }    /* webhook */
+  #log .api { color: #6fe3ae; }   /* appel API / outil MCP */
+  #log .rel { color: #ffb38a; }   /* instruction de relais */
+  #log .hum { color: #ff9c85; }   /* action humaine */
+  #log .ok { color: #fff; font-weight: 700; }
+
+  .star svg { display: block; }
+  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="star" data-s="20" style="display:inline-block;vertical-align:-3px"></span>
+    POC — Orchestration d'agents Claude par webhooks Jira</h1>
+  <div class="controls">
+    <button id="prev" class="ghost" title="Étape précédente (←)">◀</button>
+    <button id="next" class="ghost" title="Étape suivante (→)">▶</button>
+    <button id="mode" title="Basculer auto / manuel">⏸ Passer en manuel</button>
+    <button id="replay">⟲ Rejouer</button>
+    <span class="hint">flèches ◀ ▶ (ou ← → au clavier) = pas à pas · survol = pause</span>
+  </div>
+</header>
+
+<div class="layout">
+  <div>
+    <div class="boardwrap" id="boardwrap">
+      <div class="lane-title">Board Jira — projet fictif "DEMO"</div>
+      <div class="board" id="board">
+        <div class="col" data-col="0"><h3>Backlog</h3></div>
+        <div class="col" data-col="1"><h3>AI Speccing</h3></div>
+        <div class="col" data-col="2"><h3>Spec Review</h3></div>
+        <div class="col" data-col="3"><h3>TODO</h3></div>
+        <div class="col" data-col="4"><h3>In Progress</h3></div>
+        <div class="col" data-col="5"><h3>To Review</h3></div>
+        <div class="col" data-col="6"><h3>Done</h3></div>
+        <div id="ticket">
+          <div class="key">DEMO-7</div>
+          <div class="ttl">Ticket de démonstration</div>
+          <div class="row"><span class="nb"><span id="nbc">0</span> 💬</span><span class="avatar"><span class="star" data-s="12"></span></span></div>
+        </div>
+      </div>
+
+      <div class="lane-title" style="margin-top:22px">Circuit des agents
+        <span class="legend">
+          <i style="color:var(--claude)"><span class="botico"><span class="star" data-s="11"></span></span> Claude</i>
+          <i style="color:var(--accent)"><span class="humico">👤</span> humain</i>
+          <i style="color:var(--blue)"><span class="hookico">⚡</span> webhook</i>
+          <i style="color:var(--claude)"><span class="relico">↳</span> relais</i>
+        </span></div>
+      <div class="circuit">
+
+        <!-- Phase Backlog : l'humain écrit le besoin, puis déplace le ticket (aucun agent) -->
+        <div class="phase">
+          <div class="phase-col">BACKLOG</div>
+          <div class="flow">
+            <div class="node human" id="n-hb"><div class="name"><span class="humico">👤</span> écrit le besoin</div>
+              <div class="role">aucun agent ici</div></div>
+            <span class="arr">→</span>
+            <div class="node human" id="n-hm"><div class="name"><span class="humico">👤</span> déplace le ticket</div>
+              <div class="role">→ AI Speccing</div></div>
+          </div>
+        </div>
+
+        <!-- Phase AI Speccing : le déplacement déclenche le webhook -> ai-speccer -->
+        <div class="phase">
+          <div class="phase-col">AI SPECCING</div>
+          <div class="flow">
+            <span class="hook" id="h-spec">⚡ webhook « AI Speccing »</span>
+            <span class="arr">→</span>
+            <div class="agent" id="a-speccer"><div class="name"><span class="botico"><span class="star" data-s="12"></span></span> ai-speccer</div>
+              <div class="role">rédige la spec technique</div></div>
+            <span class="arr">→</span><span class="to">Spec Review</span>
+          </div>
+        </div>
+
+        <!-- Phase Spec Review : relecture humaine -->
+        <div class="phase">
+          <div class="phase-col">SPEC REVIEW</div>
+          <div class="flow">
+            <div class="node human" id="n-hs"><div class="name"><span class="humico">👤</span> relit la spec</div>
+              <div class="role">déplacement manuel</div></div>
+            <span class="arr">→</span><span class="to">TODO</span>
+          </div>
+        </div>
+
+        <!-- Phase TODO : 1 webhook -> la chaîne dev orchestrée par un seul claude -p -->
+        <div class="phase">
+          <div class="phase-col">TODO → IN PROGRESS</div>
+          <div class="flow">
+            <span class="hook" id="h-todo">⚡ webhook « TODO »</span>
+            <span class="arr">→</span>
+            <div class="agent" id="a-analyst"><div class="name"><span class="botico"><span class="star" data-s="12"></span></span> analyst</div>
+              <div class="role">vérifie la spec → In Progress</div></div>
+            <span class="arr rel" title="relais interne — même claude -p (INVOKE_FEATURE_DEV)">↳</span>
+            <div class="agent" id="a-dev"><div class="name"><span class="botico"><span class="star" data-s="12"></span></span> feature-dev</div>
+              <div class="role">implémente · commit demo-7</div></div>
+            <span class="arr rel" title="relais interne — même claude -p (INVOKE_PR_CREATOR)">↳</span>
+            <div class="agent" id="a-prcreator"><div class="name"><span class="botico"><span class="star" data-s="12"></span></span> pr-creator</div>
+              <div class="role">push · crée la PR GitHub</div></div>
+            <span class="arr">→</span><span class="to">To Review</span>
+          </div>
+        </div>
+
+        <!-- Phase To Review → Done : l'humain déplace, l'arrivée en Done déclenche deployment -->
+        <div class="phase">
+          <div class="phase-col">TO REVIEW → DONE</div>
+          <div class="flow">
+            <div class="node human" id="n-hr"><div class="name"><span class="humico">👤</span> valide la PR</div>
+              <div class="role">→ déplace en Done</div></div>
+            <span class="arr">→</span>
+            <span class="hook" id="h-done">⚡ webhook « Done »</span>
+            <span class="arr">→</span>
+            <div class="agent" id="a-deploy"><div class="name"><span class="botico"><span class="star" data-s="12"></span></span> deployment</div>
+              <div class="role">merge la PR → main</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="side">
+    <div class="panel">
+      <h2><span class="slackbadge">#</span> Notifications Slack</h2>
+      <div id="slack"></div>
+    </div>
+    <div class="panel">
+      <h2>Journal des événements</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* ============ RÉGLAGES — éditez librement ============ */
+  const ANIM = { vitesse: 1 };           // 1 = normal, 2 = deux fois plus lent
+  const ms = d => d * ANIM.vitesse;
+  /* ===================================================== */
+
+  /* étoile Claude */
+  const star = s => `<svg viewBox="0 0 24 24" width="${s}" height="${s}"><g stroke="#D97757" stroke-width="2.2" stroke-linecap="round">${[...Array(12)].map((_,i)=>`<line x1="13.2" y1="12" x2="${i%2?19.8:21.6}" y2="12" transform="rotate(${i*30} 12 12)"/>`).join('')}</g></svg>`;
+  document.querySelectorAll('.star').forEach(el => el.innerHTML = star(+el.dataset.s || 16));
+
+  const $ = id => document.getElementById(id);
+  const board = $('board'), ticket = $('ticket');
+  const cols = [...document.querySelectorAll('.col')];
+
+  let FAST = false; // vrai pendant un rejeu accéléré (retour arrière) : pas d'animations
+  function moveTicket(i, instant) {
+    const b = board.getBoundingClientRect(), c = cols[i].getBoundingClientRect();
+    if (instant || FAST) ticket.style.transition = 'none';
+    ticket.style.width = (c.width - 14) + 'px';
+    ticket.style.left  = (c.left - b.left + 7) + 'px';
+    ticket.style.top   = (c.top - b.top + 38) + 'px';
+    if (instant || FAST) requestAnimationFrame(() => ticket.style.transition = '');
+    cols.forEach((el, j) => el.classList.toggle('active', j === i));
+  }
+
+  // Notification Slack (emoji + texte) — le canal du POC
+  function addSlack(emoji, text) {
+    const d = document.createElement('div');
+    d.className = 'smsg';
+    d.innerHTML = `<span class="ava">${emoji}</span>
+      <div class="body"><div class="top"><b>Jira POC</b><span>app · à l'instant</span></div>
+      <div class="text">${text}</div><div class="ch">#poc-jira</div></div>`;
+    $('slack').appendChild(d);
+    if (FAST) d.classList.add('in'); else requestAnimationFrame(() => d.classList.add('in'));
+    $('nbc').textContent = $('slack').children.length;
+    $('slack').scrollTop = $('slack').scrollHeight;
+  }
+
+  function addLog(cls, text) {
+    const l = document.createElement('span');
+    l.className = 'l ' + cls;
+    l.textContent = text;
+    $('log').appendChild(l);
+    if (FAST) l.classList.add('in'); else requestAnimationFrame(() => l.classList.add('in'));
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+
+  const glow = (id, on) => $(id).classList.toggle('on', on);
+
+  /* ---- le scénario, étape par étape (délai avant exécution, action) ---- */
+  const steps = [
+    // ── Phase Backlog : l'humain écrit le besoin, puis déplace le ticket (aucun agent) ──
+    [600,  () => { addLog('ok', '── Nouveau cycle : ticket DEMO-7 créé en Backlog ──'); moveTicket(0); }],
+    [1400, () => { glow('n-hb', 1); addLog('hum', '👤 Un humain rédige le besoin sur le ticket DEMO-7 (Backlog)'); }],
+    [1300, () => { glow('n-hb', 0); glow('n-hm', 1); addLog('hum', '👤 Déplacement manuel du ticket → AI Speccing'); moveTicket(1); }],
+    [900,  () => { glow('n-hm', 0); }],
+
+    // ── Phase AI Speccing : le déplacement déclenche le webhook → ai-speccer ──
+    [1300, () => { glow('h-spec', 1); addLog('wh', '⚡ Webhook « AI Speccing » → invocation de ai-speccer (DEMO-7)'); }],
+    [1100, () => { glow('h-spec', 0); glow('a-speccer', 1); addLog('api', 'getJiraIssue DEMO-7 — lecture du besoin'); }],
+    [1000, () => { addLog('api', 'editJiraIssue DEMO-7 — écriture de la spec technique'); }],
+    [1200, () => { addLog('api', 'transitionJiraIssue DEMO-7 → Spec Review'); moveTicket(2); addSlack('✏️', '<b>[DEMO-7]</b> Spec rédigée → passage en « Spec Review »'); }],
+    [900,  () => { glow('a-speccer', 0); addLog('ok', 'AI_SPECCER_OK DEMO-7'); }],
+
+    // ── Phase Spec Review : relecture humaine ──
+    [1500, () => { glow('n-hs', 1); addLog('hum', '👤 Relecture de la spec par un humain…'); }],
+    [1500, () => { addLog('hum', '👤 Spec validée : déplacement manuel → TODO'); moveTicket(3); }],
+    [900,  () => { glow('n-hs', 0); }],
+
+    // ── Phase TODO : 1 webhook → la chaîne dev (analyst → feature-dev → pr-creator) ──
+    [1400, () => { glow('h-todo', 1); addLog('wh', '⚡ Webhook « TODO » → un seul claude -p orchestre la chaîne (DEMO-7)'); }],
+    [1100, () => { glow('h-todo', 0); glow('a-analyst', 1); addLog('api', 'transitionJiraIssue DEMO-7 → In Progress'); moveTicket(4); addSlack('🔍', '<b>[DEMO-7]</b> Analyse OK → démarrage du développement'); }],
+    [1000, () => { glow('a-analyst', 0); addLog('rel', 'ANALYST_OK DEMO-7 → INVOKE_FEATURE_DEV'); }],
+    [1200, () => { glow('a-dev', 1); addLog('api', 'git checkout -b demo-7 · implémentation Laravel + React · commit'); }],
+    [1100, () => { addSlack('🛠️', '<b>[DEMO-7]</b> Développement terminé → branche demo-7'); glow('a-dev', 0); addLog('rel', 'FEATURE_DEV_OK DEMO-7 demo-7 → INVOKE_PR_CREATOR'); }],
+    [1200, () => { glow('a-prcreator', 1); addLog('api', 'git push · gh pr create → main'); }],
+    [1100, () => { addLog('api', 'transitionJiraIssue DEMO-7 → To Review'); moveTicket(5); addSlack('⤴️', '<b>[DEMO-7]</b> PR créée → en attente de review humaine'); }],
+    [900,  () => { glow('a-prcreator', 0); addLog('ok', 'PR_CREATOR_OK DEMO-7 https://github.com/acme/todo-app/pull/42'); }],
+
+    // ── Phase To Review → Done : l'humain déplace, l'arrivée en Done déclenche deployment ──
+    [1500, () => { glow('n-hr', 1); addLog('hum', '👤 Review humaine de la PR sur GitHub…'); }],
+    [1400, () => { glow('n-hr', 0); addLog('hum', '👤 PR validée : déplacement manuel du ticket → Done'); moveTicket(6); }],
+    [1200, () => { glow('h-done', 1); addLog('wh', '⚡ Webhook « Done » → invocation de deployment (DEMO-7)'); }],
+    [1100, () => { glow('h-done', 0); glow('a-deploy', 1); addLog('api', 'gh pr merge --squash --delete-branch → main'); }],
+    [1100, () => { addSlack('🚀', '<b>[DEMO-7]</b> PR mergée dans main → terminé'); }],
+    [1100, () => { glow('a-deploy', 0); addLog('ok', 'DEPLOYMENT_OK DEMO-7 — ✓ circuit terminé (5 notifs Slack, 3 transitions agent, 3 déplacements humains)'); }],
+    [4500, () => reset()],
+  ];
+
+  const ALL_GLOW = ['n-hb','n-hm','h-spec','a-speccer','n-hs','h-todo','a-analyst','a-dev',
+    'a-prcreator','n-hr','h-done','a-deploy'];
+
+  let paused = false, timer = null, idx = 0, mode = 'auto';
+  $('boardwrap').addEventListener('mouseenter', () => paused = true);
+  $('boardwrap').addEventListener('mouseleave', () => paused = false);
+
+  function tick() {
+    if (mode !== 'auto') return;
+    if (paused) { timer = setTimeout(tick, 200); return; }
+    const [delay, fn] = steps[idx];
+    timer = setTimeout(() => { fn(); idx = (idx + 1) % steps.length; tick(); }, ms(delay));
+  }
+
+  function reset() {
+    $('slack').innerHTML = ''; $('log').innerHTML = ''; $('nbc').textContent = 0;
+    ALL_GLOW.forEach(id => glow(id, false));
+    moveTicket(0, true);
+    idx = 0;
+  }
+
+  /* ---- pas à pas manuel ---- */
+  function setMode(m) {
+    mode = m;
+    clearTimeout(timer);
+    $('mode').textContent = (m === 'auto') ? '⏸ Passer en manuel' : '▶ Reprendre l’auto';
+    if (m === 'auto') tick();
+  }
+  function nextStep() {                       // exécute immédiatement l'étape courante
+    if (mode === 'auto') setMode('manuel');
+    const [, fn] = steps[idx];
+    fn();
+    idx = (idx + 1) % steps.length;
+  }
+  function goTo(n) {                          // rejoue instantanément les étapes 0..n-1
+    FAST = true;
+    reset();
+    for (let i = 0; i < n; i++) steps[i][1]();
+    idx = n;
+    FAST = false;
+  }
+  function prevStep() {                       // revient à l'état précédent
+    if (mode === 'auto') setMode('manuel');
+    goTo(Math.max(0, idx - 1));
+  }
+
+  $('mode').addEventListener('click', () => setMode(mode === 'auto' ? 'manuel' : 'auto'));
+  $('next').addEventListener('click', nextStep);
+  $('prev').addEventListener('click', prevStep);
+  addEventListener('keydown', e => {
+    if (e.key === 'ArrowRight') { e.preventDefault(); nextStep(); }
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); prevStep(); }
+  });
+
+  $('replay').addEventListener('click', () => { clearTimeout(timer); reset(); if (mode === 'auto') tick(); });
+  addEventListener('resize', () => moveTicket([...cols.entries()].find(([,c]) => c.classList.contains('active'))?.[0] ?? 0, true));
+
+  /* ---- la colonne de droite épouse la hauteur du bloc de gauche (#boardwrap) ----
+     On fixe une hauteur DÉFINIE sur .side (sinon, la ligne de grille étant en `auto`,
+     le contenu de #slack/#log la fait grandir au lieu de défiler). Avec une hauteur
+     définie, les deux panneaux (flex:1) valent 50% chacun et leur contenu défile. */
+  const boardwrapEl = $('boardwrap');
+  const sideEl = document.querySelector('.side');
+  const mobile = matchMedia('(max-width: 1000px)');
+  function syncSideHeight() {
+    if (mobile.matches) { sideEl.style.height = ''; return; } // 1 colonne : hauteur naturelle
+    sideEl.style.height = boardwrapEl.getBoundingClientRect().height + 'px';
+  }
+  // ResizeObserver sur #boardwrap : se déclenche au resize de la fenêtre et à tout reflow
+  // du board/circuit. Le contenu ajouté dans #slack/#log n'affecte pas #boardwrap → pas de boucle.
+  new ResizeObserver(syncSideHeight).observe(boardwrapEl);
+  syncSideHeight();
+
+  reset(); tick();
+</script>
+</body>
+</html>
