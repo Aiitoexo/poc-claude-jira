@@ -26,6 +26,9 @@
   .hint { font-size: 12.5px; color: var(--muted); }
 
   .layout { display: grid; grid-template-columns: 1.7fr 1fr; gap: 22px; margin-top: 16px; }
+  /* sans min-width:0, le board à colonnes fixes empêche les colonnes de grille
+     de rétrécir et déborde horizontalement de la page (au lieu de défiler) */
+  .layout > * { min-width: 0; }
 
   /* ---------- BOARD ---------- */
   .boardwrap { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 18px; }
@@ -136,6 +139,40 @@
 
   .star svg { display: block; }
   @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
+
+  /* ---------- MOBILE ---------- */
+  @media (max-width: 640px) {
+    body { padding: 18px 12px 28px; }
+    header { gap: 8px; margin-bottom: 4px; }
+    h1 { font-size: 18px; }
+    .controls { margin-left: 0; width: 100%; flex-wrap: wrap; gap: 8px; }
+    /* ◀ ▶ sur une ligne, puis « manuel » + « rejouer » sur la ligne suivante :
+       chaque bouton occupe ~50 % → 2 par ligne dans l'ordre du HTML */
+    .controls button { padding: 8px 14px; flex: 1 1 calc(50% - 4px); }
+    .hint { flex-basis: 100%; }
+
+    .layout { gap: 16px; margin-top: 12px; }
+    .boardwrap { padding: 12px; border-radius: 13px; }
+
+    /* board défilable horizontalement : colonnes à largeur fixe lisible,
+       la colonne active est recentrée par moveTicket() */
+    .board { grid-template-columns: repeat(7, 84px); gap: 6px;
+      overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 8px; }
+    .col { min-height: 140px; }
+
+    /* circuit : phase empilée (label au-dessus), cartes en pleine largeur */
+    .phase { flex-direction: column; gap: 8px; }
+    .phase-col { width: 100%; padding: 7px; }
+    .flow { flex-direction: column; align-items: stretch; gap: 8px; }
+    .agent, .node.human, .hook { width: 100%; height: auto; min-height: 50px; }
+    .arr, .arr.rel { width: 100%; transform: rotate(90deg); }
+    .to { align-self: flex-start; }
+
+    .legend { display: flex; margin-left: 0; margin-top: 8px; }
+
+    .panel { padding: 14px 14px; }
+    #slack, #log { min-height: 250px; max-height: 360px; }
+  }
 </style>
 </head>
 <body>
@@ -166,7 +203,7 @@
         <div class="col" data-col="6"><h3>Done</h3></div>
         <div id="ticket">
           <div class="key">DEMO-7</div>
-          <div class="ttl">Ticket de démonstration</div>
+          <div class="ttl">Ticket de démo</div>
           <div class="row"><span class="nb"><span id="nbc">0</span> 💬</span><span class="avatar"><span class="star" data-s="12"></span></span></div>
         </div>
       </div>
@@ -276,14 +313,42 @@
   const cols = [...document.querySelectorAll('.col')];
 
   let FAST = false; // vrai pendant un rejeu accéléré (retour arrière) : pas d'animations
+
+  // ── défilement « carousel » du board ──────────────────────────────────────
+  // Quand le board déborde (mobile / fenêtre étroite), on recentre la colonne
+  // active en animant scrollLeft sur la MÊME durée que la transition du ticket,
+  // pour que la pastille et la bande de colonnes glissent d'un seul mouvement.
+  // Si tout tient à l'écran (desktop), max <= 0 → aucun effet.
+  let scrollRAF = null;
+  function carouselScroll(targetLeft, instant) {
+    cancelAnimationFrame(scrollRAF);
+    const max = board.scrollWidth - board.clientWidth;
+    const to = Math.max(0, Math.min(targetLeft, max));
+    if (instant || FAST || max <= 0) { board.scrollLeft = to; return; }
+    const from = board.scrollLeft;
+    if (Math.abs(to - from) < 1) return;
+    const dur = 900;                                   // = transition CSS du #ticket (.9s)
+    const ease = t => 1 - Math.pow(1 - t, 3);          // easeOutCubic, fluide
+    const t0 = performance.now();
+    (function frame(now) {
+      const t = Math.min(1, (now - t0) / dur);
+      board.scrollLeft = from + (to - from) * ease(t);
+      if (t < 1) scrollRAF = requestAnimationFrame(frame);
+    })(t0);
+  }
+
   function moveTicket(i, instant) {
-    const b = board.getBoundingClientRect(), c = cols[i].getBoundingClientRect();
+    const c = cols[i];
+    // position en coordonnées de contenu (offset*) → indépendante du scroll,
+    // donc le ticket glisse de façon stable pendant que le board défile
     if (instant || FAST) ticket.style.transition = 'none';
-    ticket.style.width = (c.width - 14) + 'px';
-    ticket.style.left  = (c.left - b.left + 7) + 'px';
-    ticket.style.top   = (c.top - b.top + 38) + 'px';
+    ticket.style.width = (c.offsetWidth - 14) + 'px';
+    ticket.style.left  = (c.offsetLeft + 7) + 'px';
+    ticket.style.top   = (c.offsetTop + 38) + 'px';
     if (instant || FAST) requestAnimationFrame(() => ticket.style.transition = '');
     cols.forEach((el, j) => el.classList.toggle('active', j === i));
+    // recentre la colonne active (carousel) en synchro avec le ticket
+    carouselScroll(c.offsetLeft - (board.clientWidth - c.offsetWidth) / 2, instant);
   }
 
   // Notification Slack (emoji + texte) — le canal du POC
